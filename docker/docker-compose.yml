@@ -1,0 +1,188 @@
+services:
+  kafka:
+    image: apache/kafka:latest
+    container_name: ledger-kafka
+    hostname: kafka
+    ports:
+      - "9092:9092"      # for connections from your host machine (Python scripts)
+    environment:
+      - KAFKA_NODE_ID=1
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_LISTENERS=PLAINTEXT://kafka:19092,CONTROLLER://kafka:19093,PLAINTEXT_HOST://0.0.0.0:9092
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:19092,PLAINTEXT_HOST://localhost:9092
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:19093
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
+      - KAFKA_NUM_PARTITIONS=3
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+
+  minio:
+    image: minio/minio:latest
+    container_name: ledger-minio
+    ports:
+      - "9000:9000"   # S3 API endpoint (this is what boto3 will talk to)
+      - "9001:9001"   # web console (open this in your browser)
+    environment:
+      - MINIO_ROOT_USER=ledgeradmin
+      - MINIO_ROOT_PASSWORD=ledgerpassword123
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  producer:
+    build:
+      context: ../producer
+    container_name: ledger-producer
+    depends_on:
+      - kafka
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:19092
+      - KAFKA_TOPIC=bank-transactions
+      - NUM_ACCOUNTS=300
+      - ACCOUNT_STATE_PATH=/data/accounts.json
+    volumes:
+      - producer_state:/data
+    restart: unless-stopped
+
+  bronze:
+    build:
+      context: ../bronze
+    container_name: ledger-bronze
+    depends_on:
+      - kafka
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:19092
+      - KAFKA_TOPIC=bank-transactions
+      - KAFKA_CONSUMER_GROUP=bronze-consumer-group
+      - BRONZE_TABLE_PATH=/data/bronze/transactions
+      - BATCH_SIZE=20
+      - BATCH_TIMEOUT_SECONDS=10
+    volumes:
+      - bronze_data:/data
+    restart: unless-stopped
+
+  silver:
+    build:
+      context: ../silver
+    container_name: ledger-silver
+    depends_on:
+      - bronze
+    environment:
+      - BRONZE_TABLE_PATH=/bronze_data/bronze/transactions
+      - SILVER_TABLE_PATH=/data/silver/transactions
+      - REJECTED_TABLE_PATH=/data/silver/rejected
+      - SILVER_STATE_PATH=/data/silver_state.json
+      - POLL_INTERVAL_SECONDS=15
+    volumes:
+      - bronze_data:/bronze_data:ro
+      - silver_data:/data
+    restart: unless-stopped
+
+  fraud:
+    build:
+      context: ../fraud
+    container_name: ledger-fraud
+    depends_on:
+      - silver
+    environment:
+      - SILVER_TABLE_PATH=/silver_data/silver/transactions
+      - FLAGGED_TABLE_PATH=/data/fraud/flagged
+      - FRAUD_STATE_PATH=/data/fraud_account_history.json
+      - FRAUD_TRACKING_STATE_PATH=/data/fraud_tracking_state.json
+      - POLL_INTERVAL_SECONDS=15
+      - VELOCITY_THRESHOLD=8
+      - VELOCITY_WINDOW_SECONDS=120
+      - AMOUNT_ANOMALY_MULTIPLIER=5.0
+      - MIN_TRANSACTIONS_FOR_BASELINE=5
+      - NEW_COUNTERPARTY_AMOUNT_THRESHOLD=200000
+    volumes:
+      - silver_data:/silver_data:ro
+      - fraud_data:/data
+    restart: unless-stopped
+
+  dlq:
+    build:
+      context: ../dlq
+    container_name: ledger-dlq
+    depends_on:
+      - fraud
+      - minio
+    environment:
+      - FLAGGED_TABLE_PATH=/fraud_data/fraud/flagged
+      - REJECTED_TABLE_PATH=/silver_data/silver/rejected
+      - DLQ_STATE_PATH=/data/dlq_archiver_state.json
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_ACCESS_KEY=ledgeradmin
+      - MINIO_SECRET_KEY=ledgerpassword123
+      - MINIO_BUCKET=ledger-dlq
+      - POLL_INTERVAL_SECONDS=30
+    volumes:
+      - fraud_data:/fraud_data:ro
+      - silver_data:/silver_data:ro
+      - dlq_state:/data
+    restart: unless-stopped
+
+  gold:
+    build:
+      context: ../gold
+    container_name: ledger-gold
+    depends_on:
+      - silver
+      - fraud
+      - producer
+    environment:
+      - SILVER_TABLE_PATH=/silver_data/silver/transactions
+      - FLAGGED_TABLE_PATH=/fraud_data/fraud/flagged
+      - PRODUCER_ACCOUNTS_STATE_PATH=/producer_data/accounts.json
+      - DAILY_VOLUME_PATH=/data/gold/daily_volume
+      - ACCOUNT_BALANCES_PATH=/data/gold/account_balances
+      - DAILY_FRAUD_RATE_PATH=/data/gold/daily_fraud_rate
+      - TOP_ACCOUNTS_PATH=/data/gold/top_accounts
+      - POLL_INTERVAL_SECONDS=30
+    volumes:
+      - silver_data:/silver_data:ro
+      - fraud_data:/fraud_data:ro
+      - producer_state:/producer_data:ro
+      - gold_data:/data
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ../dashboard
+    container_name: ledger-dashboard
+    depends_on:
+      - gold
+    ports:
+      - "8501:8501"
+    environment:
+      - DAILY_VOLUME_PATH=/gold_data/gold/daily_volume
+      - ACCOUNT_BALANCES_PATH=/gold_data/gold/account_balances
+      - DAILY_FRAUD_RATE_PATH=/gold_data/gold/daily_fraud_rate
+      - TOP_ACCOUNTS_PATH=/gold_data/gold/top_accounts
+      - FLAGGED_TABLE_PATH=/fraud_data/fraud/flagged
+      - REFRESH_INTERVAL_SECONDS=15
+    volumes:
+      - gold_data:/gold_data:ro
+      - fraud_data:/fraud_data:ro
+    restart: unless-stopped
+
+volumes:
+  kafka_data:
+  minio_data:
+  producer_state:
+  bronze_data:
+  silver_data:
+  fraud_data:
+  dlq_state:
+  gold_data:
