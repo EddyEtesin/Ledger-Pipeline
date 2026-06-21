@@ -75,6 +75,9 @@ h2, h3 {
     font-family: 'JetBrains Mono', monospace;
     font-weight: 600;
     color: var(--accent);
+    overflow: visible;
+    white-space: nowrap;
+    font-size: clamp(1.1rem, 2.2vw, 1.8rem);
 }
 
 [data-testid="stMetricLabel"] {
@@ -150,6 +153,22 @@ def format_naira(value: float) -> str:
     return f"₦{value:,.2f}"
 
 
+def format_naira_compact(value: float) -> str:
+    """
+    Compact form for metric cards, where space is tight and full precision
+    isn't the point — e.g. ₦270.6M instead of ₦270,643,xxx.xx.
+    """
+    abs_value = abs(value)
+    sign = "-" if value < 0 else ""
+    if abs_value >= 1_000_000_000:
+        return f"{sign}₦{abs_value / 1_000_000_000:,.2f}B"
+    if abs_value >= 1_000_000:
+        return f"{sign}₦{abs_value / 1_000_000:,.2f}M"
+    if abs_value >= 1_000:
+        return f"{sign}₦{abs_value / 1_000:,.1f}K"
+    return f"{sign}₦{abs_value:,.2f}"
+
+
 # ============================================================
 # OVERVIEW TAB
 # ============================================================
@@ -170,7 +189,11 @@ def render_overview():
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Accounts", f"{len(balances):,}")
-    col2.metric("Total Balance in System", format_naira(balances["computed_balance"].sum()))
+    col2.metric(
+        "Total Balance in System",
+        format_naira_compact(balances["computed_balance"].sum()),
+        help=format_naira(balances["computed_balance"].sum()),
+    )
     col3.metric(f"Transactions ({latest_day['date']})", f"{int(latest_day['total_transaction_count']):,}")
     col4.metric(f"Fraud Rate ({latest_fraud['date']})", f"{latest_fraud['fraud_rate_pct']:.2f}%")
 
