@@ -1,6 +1,6 @@
-Ledger-Grade Transaction Pipeline
-A real-time, end-to-end bank transaction pipeline built from scratch — Kafka ingestion, medallion architecture (Bronze/Silver/Gold) on Delta Lake, rule-based fraud detection, S3-compatible dead-letter handling, and a live monitoring dashboard. Everything runs locally via Docker, no cloud account required.
-Built as a hands-on data engineering portfolio project, simulating Nigerian bank transactions (NGN) end to end.
+Ledger-grade transaction pipeline
+A real-time bank transaction pipeline, built from scratch: Kafka ingestion, a Bronze, Silver, and Gold setup on Delta Lake, rule-based fraud detection, an S3-compatible dead-letter queue, and a live dashboard to watch it all happen. Runs entirely on Docker, no cloud account needed.
+I built this to get hands-on with real data engineering patterns, using simulated Nigerian bank transactions (NGN) end to end.
 Architecture
 ```mermaid
 flowchart LR
